@@ -1,7 +1,7 @@
 module HGT
 
 function testfunction()
-    println("Testing, five, six, EIGHT")
+    println("Testing, one, two, three")
 end
 
 end # Module HGT
