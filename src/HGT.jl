@@ -1,7 +1,5 @@
 module HGT
 
-function testfunction()
-    println("Testing, one, two, three")
-end
+include("GenbankParse.jl")
 
 end # Module HGT
