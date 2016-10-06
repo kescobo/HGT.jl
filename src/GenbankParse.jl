@@ -87,12 +87,74 @@ function getinfo(s::IOStream, startindex::Int)
 end
 
 
+function getfeatures(s::IOStream, startindex::Int)
+    findfeatures(s, startindex)
+    function _iter()
+        @label newfeature
+        l = readline(s)
+        feature = Dict()
+        f = match(r"^\s{5}(\w+)\s+([complent(\d.<>]+)", l)
+        if f != nothing
+            feature["type"] = f.captures[1]
+            loc = match(r"(\d+)..(\d+)", f.captures[2])
+            feature["location"] = Dict{AbstractString, Int}([
+                        ("start", parse(Int, loc.captures[1])),
+                        ("end", parse(Int, loc.captures[2]))
+                        ])
+            if startswith(f.captures[2], "complement")
+                feature["location"]["strand"] = -1
+            else
+                feature["location"]["strand"] = 1
+            end
+        else
+            println("exit")
+            @goto ex
+        end
+
+        @label tags
+        p = position(s)
+        l = readline(s)
+        startfeat = match(r"^\s{21}/(\w+)=\"(.+)", l)
+        if startfeat != nothing
+            tagtype = startfeat.captures[1]
+            tag = startfeat.captures[2]
+
+            @label conttag
+            if endswith(tag, "\"")
+                @goto addfeature
+            else
+                p = position(s)
+                l = readline(s)
+                cont = match(r"^\s{21}(.+)", l)
+                tag = "$tag $(cont.captures[1])"
+                @goto conttag
+            end
+
+            @label addfeature
+            if tagtype == "translation"
+                feature[tagtype] = AminoAcidSequence(replace(tag, r"[\" ]", ""))
+            else
+                feature[tagtype] = replace(tag, "\"", "")
+            end
+            @goto tags
+        else
+            seek(s, p)
+            produce(feature)
+            @goto newfeature
+        end
+        @label ex
+    end
+    Task(_iter)
+end
+
+
 function getseq(s::IOStream, startindex::Int)
   o = findorigin(s, startindex)
   seqstart = position(s)
   seqend = findcontigend(s, o)
   return parseseq(s, seqstart, seqend)
 end
+
 
 function parseseq(s::IOStream, seqstart::Int, seqend::Int)
   seek(s, seqstart)
