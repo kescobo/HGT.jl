@@ -1,12 +1,12 @@
-module wtf
+module GenbankParse
 
 using Bio.Seq,
       Bio.Intervals,
       DataFrames,
       JLD
 
-function booz(a, b)
-    2a+2b
+function fooz(a, b)
+    a+2b+5
 end
 
 function findfeatures(s::IOStream, startindex::Int)
