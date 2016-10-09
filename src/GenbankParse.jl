@@ -1,7 +1,13 @@
+module GenbankParse
+
 using Bio.Seq,
       Bio.Intervals,
       DataFrames,
       JLD
+
+function bar(a, b)
+    a+b
+end
 
 function findfeatures(s::IOStream, startindex::Int)
   seek(s, startindex)
@@ -90,57 +96,70 @@ end
 function getfeatures(s::IOStream, startindex::Int)
     findfeatures(s, startindex)
     function _iter()
+        featstart = r"^\s{5}(\w+)\s+([complent(\d.<>]+)"
+        tagstart = r"^\s{21}\/(\w+)=(.+)"
+        tagcont = r"^\s{21}(.+)"
+
+        pos = position(s)
+        ln = readline(s)
+
         @label newfeature
-        l = readline(s)
         feature = Dict()
-        f = match(r"^\s{5}(\w+)\s+([complent(\d.<>]+)", l)
-        if f != nothing
-            feature["type"] = f.captures[1]
-            loc = match(r"(\d+)..(\d+)", f.captures[2])
+        print(ln)
+        feat = match(featstart, ln)
+        if feat == nothing
+            println("exit")
+            @goto ex
+        else
+            feature["type"] = feat.captures[1]
+            loc = match(r"(\d+)..(\d+)", feat.captures[2])
             feature["location"] = Dict{AbstractString, Int}([
                         ("start", parse(Int, loc.captures[1])),
                         ("end", parse(Int, loc.captures[2]))
                         ])
-            if startswith(f.captures[2], "complement")
+            if startswith(feat.captures[2], "complement")
                 feature["location"]["strand"] = -1
             else
                 feature["location"]["strand"] = 1
             end
-        else
-            println("exit")
-            @goto ex
         end
 
-        @label tags
-        p = position(s)
-        l = readline(s)
-        startfeat = match(r"^\s{21}/(\w+)=\"(.+)", l)
-        if startfeat != nothing
-            tagtype = startfeat.captures[1]
-            tag = startfeat.captures[2]
+        pos = position(s)
+        ln = readline(s)
 
-            @label conttag
-            if endswith(tag, "\"")
+        @label newtag
+        tag = match(tagstart, ln)
+
+        if tag == nothing
+            seek(s, pos)
+            produce(feature)
+            @goto newfeature
+        else
+            tagtype = tag.captures[1]
+            tagcontent = tag.captures[2]
+
+            @label continuetag
+
+            pos = position(s)
+            ln = readline(s)
+            tag = match(tagcont, ln)
+
+            if tag == nothing
                 @goto addfeature
             else
-                p = position(s)
-                l = readline(s)
-                cont = match(r"^\s{21}(.+)", l)
-                tag = "$tag $(cont.captures[1])"
-                @goto conttag
+                tag = match(r"^\s{21}(.+)", ln)
+                tagcontent = "$tagcontent $(tag.captures[1])"
+                @goto continuetag
             end
 
             @label addfeature
             if tagtype == "translation"
-                feature[tagtype] = AminoAcidSequence(replace(tag, r"[\" ]", ""))
+                feature[tagtype] = AminoAcidSequence(replace(tagcontent, r"[\" ]", ""))
             else
-                feature[tagtype] = replace(tag, "\"", "")
+                feature[tagtype] = replace(tagcontent, "\"", "")
             end
-            @goto tags
-        else
-            seek(s, p)
-            produce(feature)
-            @goto newfeature
+
+            @goto newtag
         end
         @label ex
     end
@@ -161,3 +180,5 @@ function parseseq(s::IOStream, seqstart::Int, seqend::Int)
   seq = String(read(s, (seqend - seqstart - 3)))
   return DNASequence(replace(seq, r"[ \n\d]+", ""))
 end
+
+end # module GenbankParse
