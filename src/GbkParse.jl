@@ -5,10 +5,6 @@ using Bio.Seq,
       DataFrames,
       JLD
 
-function fooz(a, b)
-    a+2b+5
-end
-
 function findfeatures(s::IOStream, startindex::Int)
   seek(s, startindex)
   while !eof(s)
@@ -105,7 +101,6 @@ function getfeatures(s::IOStream, startindex::Int)
 
         @label newfeature
         feature = Dict()
-        print(ln)
         feat = match(featstart, ln)
         if feat == nothing
             println("exit")
@@ -124,43 +119,38 @@ function getfeatures(s::IOStream, startindex::Int)
             end
         end
 
-        pos = position(s)
+
+        tagtype = nothing
+        @label tags
+
         ln = readline(s)
 
-        @label newtag
-        tag = match(tagstart, ln)
-
-        if tag == nothing
-            seek(s, pos)
-            produce(feature)
-            @goto newfeature
-        else
-            tagtype = tag.captures[1]
-            tagcontent = tag.captures[2]
-
-            @label continuetag
-
-            pos = position(s)
-            ln = readline(s)
-            tag = match(tagcont, ln)
-
-            if tag == nothing
-                @goto addfeature
-            else
-                tag = match(r"^\s{21}(.+)", ln)
-                tagcontent = "$tagcontent $(tag.captures[1])"
-                @goto continuetag
-            end
-
-            @label addfeature
-            if tagtype == "translation"
-                feature[tagtype] = AminoAcidSequence(replace(tagcontent, r"[\" ]", ""))
-            else
-                feature[tagtype] = replace(tagcontent, "\"", "")
-            end
-
-            @goto newtag
+        if !ismatch(r"^\s{21}", ln)
+            @goto addfeature
         end
+
+        nexttag = match(tagstart, ln)
+        sametag = match(tagcont, ln)
+
+        if nexttag != nothing
+            tagtype = nexttag.captures[1]
+            feature[tagtype] = nexttag.captures[2]
+        elseif sametag != nothing
+            feature[tagtype] = "$(feature[tagtype]) $(sametag.captures[1])"
+        end
+
+        if tagtype == "translation"
+            feature[tagtype] = AminoAcidSequence(replace(feature[tagtype], r"[\"\s]", ""))
+        else
+            feature[tagtype] = replace(feature[tagtype], "\"", "")
+        end
+        @goto tags
+
+        @label addfeature
+        produce(feature)
+
+        @goto newfeature
+
         @label ex
     end
     Task(_iter)
