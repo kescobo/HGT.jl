@@ -92,7 +92,7 @@ end
 function getfeatures(s::IOStream, startindex::Int)
     findfeatures(s, startindex)
     function _iter()
-        featstart = r"^\s{5}(\w+)\s+([complent(\d.<>]+)"
+        featstart = r"^\s{5}(\S+)\s+([complent(\d.<>]+)"
         tagstart = r"^\s{21}\/(\w+)=(.+)"
         tagcont = r"^\s{21}(.+)"
 
