@@ -3,31 +3,120 @@ module GenbankParse
 using Bio.Seq,
       Bio.Intervals,
       DataFrames,
-      JLD
+      JLD,
+      Logging
 
-function findfeatures(s::IOStream, startindex::Int)
-  seek(s, startindex)
-  while !eof(s)
-      p = position(s)
-      l = readline(s)
-      if ismatch(r"^FEATURES", l)
-          return p
-      end
-  end
-  error("No features list found after position $startindex")
+@Logging.configure(level=DEBUG)
+
+type GenbankFeature
+    start::Int
+    stop::Int
+    strand::Int
+    featuretype::AbstractString
+    tags::Dict
+
+    function GenbankFeature(start::Int, stop::Int, strand::Int, featuretype::AbstractString, tags::Dict)
+        start < stop ? true : error("start must be before stop")
+        strand == 1 || strand == -1 ? true : error("strand must be 1 or -1")
+        new(start, stop, strand, featuretype, tags)
+    end
 end
 
 
-function findlocus(s::IOStream, startindex::Int)
-  seek(s, startindex)
-  while !eof(s)
-      p = position(s)
-      l = readline(s)
-      if ismatch(r"^LOCUS", l)
-          return p
-      end
-  end
-  error("No locus found after position $startindex")
+type GenbankLocus
+    name::AbstractString
+    len::Int
+    moltype::AbstractString
+    topo::Nullable{AbstractString}
+    gbkdivision::Nullable{AbstractString}
+    date::Nullable{Date}
+
+    function GenbankLocus(name::AbstractString, len::Int, moltype::AbstractString, topo=nothing, gbkdivision=nothing, date=nothing)
+        moltype == "DNA" || moltype == "RNA" ? true : @warn("Invalid molecule type: $moltype")
+        topo == nothing || topo == "linear" || topo == "circular" ? true : @warn("Invalid topology: $topo")
+        gbkdivision = Set(["PRI", "ROD", "MAM", "VRT", "INV", "PLN", "BCT", "VRL", "PHG", "SYN", "UNA", "EST", "PAT", "STS", "GSS", "HTG", "HTC", "ENV"])
+        gbkdivision == nothing || gbkdivision in gbkdivision ? true : @warn("Invalid GenBank Division: $gbkdivision")
+        new(name, len, moltype, Nullable{AbstractString}(topo), Nullable{AbstractString}(gbkdivision), Nullable{Date}(date))
+    end
+end
+
+
+type GenbankMetadata
+    locus::GenbankLocus
+    definition::AbstractString
+    accession::AbstractString
+    organism::AbstractString
+    features::Vector{GenbankFeature}
+end
+
+
+function parsefeatures(s::IOStream, line::AbstractString)
+    startswith(line, "FEATURES") ? true : @err("Not the beginning of FEATURES")
+    function _iter()
+        @debug("Parse Features iteration started")
+        line = readline(s)
+
+        while ismatch(r"^\s{5}\w+", line)
+            @debug(" Feature typeLine: $line")
+            currentfeature = Vector{AbstractString}([line])
+            line = readline(s)
+            while ismatch(r"^\s{21}", line)
+                push!(currentfeature, line)
+                line = readline(s)
+            end
+
+            feature = capturefeature(currentfeature)
+            @debug("Producing Feature: $feature")
+            produce((feature, line))
+
+        end
+
+        @debug("DEBUG: out of features, line = $line")
+        if ismatch(r"^\w", line)
+            @info("End of Features")
+        else
+            @err("Something went wrong")
+        end
+    end
+    Task(_iter)
+end
+
+
+function capturefeature{T <: AbstractString}(featurelines::Vector{T})
+    featstart = match(r"^\s{5}(\w+)\s+(complement\()?<?(\d+)\.{2}(\d+)>?\)?", featurelines[1])
+    featstart.captures[1] != nothing ? tp = featstart.captures[1] : @err("Not a valid feature")
+    featstart.captures[2] == nothing ? strand = 1 : strand = -1
+    start = parse(Int64, featstart.captures[3])
+    stop = parse(Int64, featstart.captures[4])
+    @info("Feature: $tp\nLocation: $start-$stop on strand $strand")
+    feature = GenbankFeature(start, stop, strand, tp, Dict())
+
+    tag = nothing
+
+    for line in featurelines[2:length(featurelines)]
+        parser = match(r"\s{21}(\/(\w+)=)?(.+)", line)
+
+        if parser != nothing && parser.captures[1] != nothing
+            tag = parser.captures[2]
+
+            tag in keys(feature.tags) ? @warn("WARNING: Overwriting $tag tag in feature at $start") : true
+            feature.tags[tag] = parser.captures[3]
+        elseif parser != nothing
+            feature.tags[tag] = "$(feature.tags[tag]) $(parser.captures[2])"
+        else
+            @warn("empty tag line")
+        end
+    end
+
+    for key in keys(feature.tags)
+        @debug("key: $key")
+        if key == "translation"
+            feature.tags[key] = AminoAcidSequence(replace(feature.tags[key], r"[\"\s]", ""))
+        else
+            feature.tags[key] = replace(feature.tags[key], "\"", "")
+        end
+    end
+    return feature
 end
 
 
@@ -40,7 +129,7 @@ function findorigin(s::IOStream, startindex::Int)
           return p
       end
   end
-  error("No origin found after position $startindex")
+  @warn("No origin found after position $startindex")
 end
 
 
@@ -52,108 +141,7 @@ function findcontigend(s::IOStream, startindex::Int)
           return position(s)
       end
   end
-  error("No contigs found after position $startindex")
-end
-
-
-function getinfo(s::IOStream, startindex::Int)
-  md = Dict()
-  featuresstart = findfeatures(s, startindex)
-  seek(s, startindex)
-  contiginfo = String(read(s, featuresstart - startindex))
-
-  locusline = match(
-      r"LOCUS\s{7}(\S+)\s+\d+ bp\s+(\w+)\s+(\w+)\s+([A-Z]{3})(?:\s+(\d\d\-[A-Z]{3}\-\d{4}))?",
-      contiginfo
-      )
-  definition = replace(match(r"(?<=\n)DEFINITION  ([\s\S]+?)(?=\n[A-Z])", contiginfo).captures[1], r"\n\s+", " ")
-  accession = match(r"(?<=\n)ACCESSION   ([\S]+)", contiginfo).captures[1]
-
-  source = match(r"(?<=\n)SOURCE      ([\S\s]+?)\n", contiginfo)
-      if source != nothing
-          source = source.captures[1]
-      end
-  organism = match(r"(?<=\n)  ORGANISM  ([\S\s]+?)\n", contiginfo)
-      if organism != nothing
-          organism = organism.captures[1]
-      end
-
-  return locusline.captures[1], Dict([
-                  ("moltype", locusline.captures[2]),
-                  ("topology", locusline.captures[3]),
-                  ("gbk division", locusline.captures[4]),
-                  ("definition", definition),
-                  ("souce", source),
-                  ("organism", organism)
-                  ])
-end
-
-
-function getfeatures(s::IOStream, startindex::Int)
-    findfeatures(s, startindex)
-    function _iter()
-        featstart = r"^\s{5}(\S+)\s+([complent(\d.<>]+)"
-        tagstart = r"^\s{21}\/(\w+)=(.+)"
-        tagcont = r"^\s{21}(.+)"
-
-        pos = position(s)
-        ln = readline(s)
-
-        @label newfeature
-        feature = Dict()
-        feat = match(featstart, ln)
-        if feat == nothing
-            println("exit")
-            @goto ex
-        else
-            feature["type"] = feat.captures[1]
-            loc = match(r"(\d+)..(\d+)", feat.captures[2])
-            feature["location"] = Dict{AbstractString, Int}([
-                        ("start", parse(Int, loc.captures[1])),
-                        ("end", parse(Int, loc.captures[2]))
-                        ])
-            if startswith(feat.captures[2], "complement")
-                feature["location"]["strand"] = -1
-            else
-                feature["location"]["strand"] = 1
-            end
-        end
-
-
-        tagtype = nothing
-        @label tags
-
-        ln = readline(s)
-
-        if !ismatch(r"^\s{21}", ln)
-            @goto addfeature
-        end
-
-        nexttag = match(tagstart, ln)
-        sametag = match(tagcont, ln)
-
-        if nexttag != nothing
-            tagtype = nexttag.captures[1]
-            feature[tagtype] = nexttag.captures[2]
-        elseif sametag != nothing
-            feature[tagtype] = "$(feature[tagtype]) $(sametag.captures[1])"
-        end
-
-        if tagtype == "translation"
-            feature[tagtype] = AminoAcidSequence(replace(feature[tagtype], r"[\"\s]", ""))
-        else
-            feature[tagtype] = replace(feature[tagtype], "\"", "")
-        end
-        @goto tags
-
-        @label addfeature
-        produce(feature)
-
-        @goto newfeature
-
-        @label ex
-    end
-    Task(_iter)
+  @warn("No contigs found after position $startindex")
 end
 
 
@@ -170,5 +158,11 @@ function parseseq(s::IOStream, seqstart::Int, seqend::Int)
   seq = String(read(s, (seqend - seqstart - 3)))
   return DNASequence(replace(seq, r"[ \n\d]+", ""))
 end
+
+
+function parsegbk(s::IOStream)
+    seek(s, 0)
+end
+
 
 end # module GenbankParse
