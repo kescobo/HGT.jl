@@ -68,7 +68,6 @@ function parsefeatures(s::IOStream, line::AbstractString)
             feature = capturefeature(currentfeature)
             @debug("Producing Feature: $feature")
             produce((feature, line))
-
         end
 
         @debug("DEBUG: out of features, line = $line")
